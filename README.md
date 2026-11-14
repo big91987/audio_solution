@@ -42,9 +42,31 @@ cd voicebridge
 ./build.sh
 ```
 
-产物 `voicebridge/VoiceBridge.app`。脚本做三件事：`swiftc -O` 编译、复制 `Info.plist`、ad-hoc 签名。
+一条命令产出两样东西：
 
-编译失败时 `build.sh` 有 `set -e`，但**务必确认输出里有「构建完成」**——历史上出现过编译失败却继续用旧二进制测试的情况。
+| 产物 | 路径 |
+|---|---|
+| 可运行的 App | `voicebridge/VoiceBridge.app` |
+| **安装包** | `output/VoiceBridge-1.0.dmg` |
+
+DMG 里是 `VoiceBridge.app` + 指向 `/Applications` 的快捷方式，拖进去即可安装。`output/` 已加入 `.gitignore`，是本地构建产物，不进仓库。
+
+编译失败时 `build.sh` 有 `set -e`，但**务必确认输出里有「构建完成」和「DMG 已输出」**——历史上出现过编译失败却继续用旧二进制测试的情况。
+
+## 安装
+
+1. 双击 `output/VoiceBridge-1.0.dmg`，把 VoiceBridge 拖进 `Applications`
+2. 首次启动会被 Gatekeeper 拦（本地 ad-hoc 签名、未公证），**右键 → 打开**，或执行：
+   ```bash
+   xattr -d com.apple.quarantine /Applications/VoiceBridge.app
+   ```
+3. 启动后授权「辅助功能」和「输入监控」，菜单栏出现 🎙 图标
+
+**配置文件不在项目目录里**，存放在用户主目录：
+
+```
+~/.voicebridge/config.yaml
+```
 
 ## 运行
 

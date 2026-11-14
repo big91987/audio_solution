@@ -1,5 +1,6 @@
 # 编译产物
 voicebridge/VoiceBridge.app/
+output/
 
 # 第三方源码与压缩包（体积大，不入库）
 blurt.tar.gz

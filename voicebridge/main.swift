@@ -1,15 +1,113 @@
 import Cocoa
 import ApplicationServices
 
-// MARK: - 常量
-let kRightCommand: Int64 = 54
-let kHoldKey: Int64 = 49            // 空格（非修饰键，UU 场景下实测可触发）
-let kSyntheticCtrl: CGKeyCode = 59
+// MARK: - 配置（默认值 = 实测可用组合；改 ~/.voicebridge/config.json 后重启生效）
+struct VBConfig: Codable {
+    var triggerKeyCode: Int64   // 触发 VoiceBridge 的键（默认 49 = 空格）
+    var doubaoKeyCode: Int64    // 唤起豆包语音的键（默认 59 = 左侧 Control）
+    var armDelay: Double        // 按住多久才开录（防误触）
+    var clipboardWait: Double   // 写剪贴板到按 Cmd+V 的等待（留 UU 同步时间）
+
+    static let `default` = VBConfig(triggerKeyCode: 49, doubaoKeyCode: 59,
+                                    armDelay: 0.35, clipboardWait: 0.85)
+}
+
+let vbConfigDir = NSHomeDirectory() + "/.voicebridge"
+let vbConfigPath = vbConfigDir + "/config.yaml"
+
+// 运行期可改：菜单里点选后立即写入 YAML 并生效；手改 YAML 后 1 秒内自动重载
+var cfg: VBConfig = VBConfig.default
+
+// 菜单里可选的值
+let triggerOptions: [Int64] = [49, 48, 36, 53, 41, 43, 47, 50, 105, 54, 56]
+let doubaoOptions:  [Int64] = [59, 62, 58, 61, 105, 96, 97, 98, 100, 101]
+let armOptions:     [Int]   = [200, 300, 350, 500, 800]
+
+func saveConfig() {
+    let text = """
+    # VoiceBridge 配置（改完保存，1 秒内自动重载；菜单里的设置也写进这个文件）
+    # 常用键码：
+    #   49=空格  48=Tab  36=回车  53=Esc  41=分号  43=逗号  47=句号  50=反引号
+    #   59=左Control  62=右Control  58=左Option  61=右Option  54=右Command  55=左Command  56=左Shift
+    #   105=F13  103=F11  111=F12  96=F5  97=F6  98=F7  100=F8  101=F9
+    triggerKeyCode: \(cfg.triggerKeyCode)
+    doubaoKeyCode: \(cfg.doubaoKeyCode)
+    armDelay: \(cfg.armDelay)
+    clipboardWait: \(cfg.clipboardWait)
+
+    """
+    try? FileManager.default.createDirectory(atPath: vbConfigDir, withIntermediateDirectories: true)
+    try? text.write(toFile: vbConfigPath, atomically: true, encoding: .utf8)
+}
+
+func loadConfig() -> VBConfig {
+    var c = VBConfig.default
+    try? FileManager.default.createDirectory(atPath: vbConfigDir, withIntermediateDirectories: true)
+    guard let text = try? String(contentsOfFile: vbConfigPath, encoding: .utf8) else {
+        saveConfig()
+        return c
+    }
+    for raw in text.components(separatedBy: .newlines) {
+        let line = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        let parts = line.split(separator: ":")
+        guard parts.count >= 2 else { continue }
+        let key = parts[0].trimmingCharacters(in: .whitespaces)
+        let val = parts[1].trimmingCharacters(in: .whitespaces)
+        switch key {
+        case "triggerKeyCode": if let v = Int64(val) { c.triggerKeyCode = v }
+        case "doubaoKeyCode":  if let v = Int64(val) { c.doubaoKeyCode = v }
+        case "armDelay":       if let v = Double(val) { c.armDelay = v }
+        case "clipboardWait":  if let v = Double(val) { c.clipboardWait = v }
+        default: break
+        }
+    }
+    return c
+}
+
 let kVKey: CGKeyCode = 9
 let uuBundleID = "com.netease.uuremote"
-let armDelay: Double = 0.35          // 按住多久才真正开录（防误触）
-let clipboardWait: Double = 0.85     // 写剪贴板到发 Cmd+V 之间的等待
-let uuActivateWait: Double = 0.45    // 激活 UU 到发 Cmd+V
+let uuActivateWait: Double = 0.45
+
+// 修饰键 → CGEventFlags（既用于合成豆包快捷键，也用于识别修饰键型触发键）
+let modifierFlags: [Int64: CGEventFlags] = [
+    54: .maskCommand,   55: .maskCommand,
+    56: .maskShift,     60: .maskShift,
+    58: .maskAlternate, 61: .maskAlternate,
+    59: .maskControl,   62: .maskControl,
+]
+
+func keyName(_ code: Int64) -> String {
+    switch code {
+    case 49: return "空格"
+    case 36: return "回车"
+    case 48: return "Tab"
+    case 53: return "Esc"
+    case 51: return "Delete"
+    case 54: return "右侧 Command"
+    case 55: return "左侧 Command"
+    case 56: return "左侧 Shift"
+    case 60: return "右侧 Shift"
+    case 58: return "左侧 Option"
+    case 61: return "右侧 Option"
+    case 59: return "左侧 Control"
+    case 62: return "右侧 Control"
+    case 41: return "分号"
+    case 43: return "逗号"
+    case 47: return "句号"
+    case 42: return "反斜杠"
+    case 50: return "反引号"
+    case 96: return "F5"
+    case 97: return "F6"
+    case 98: return "F7"
+    case 100: return "F8"
+    case 101: return "F9"
+    case 109: return "F10"
+    case 103: return "F11"
+    case 111: return "F12"
+    case 105: return "F13"
+    default: return "键码\(code)"
+    }
+}
 
 final class KeyPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -33,15 +131,39 @@ final class Bridge: NSObject, NSApplicationDelegate {
     var tapEnabled = false
     var tapSource: CFRunLoopSource?
     var pollTimer: Timer?
+    var configTimer: Timer?
+    var lastConfigMTime = Date.distantPast
 
     // MARK: 启动
     func applicationDidFinishLaunching(_ n: Notification) {
+        cfg = loadConfig()
+        lastConfigMTime = ((try? FileManager.default.attributesOfItem(atPath: vbConfigPath))?[.modificationDate] as? Date) ?? Date()
         src = CGEventSource(stateID: .hidSystemState)
         buildStatusItem()
         buildPanel()
         checkPermissions()
         installTap()
-        log("VoiceBridge 已启动 · 按住空格键说话，松开自动粘贴到远端")
+        startConfigWatcher()
+        log("VoiceBridge 已启动 · 按住\(keyName(cfg.triggerKeyCode))说话，唤起豆包用 \(keyName(cfg.doubaoKeyCode)) · 松开自动粘贴到远端")
+    }
+
+    func startConfigWatcher() {
+        configTimer?.invalidate()
+        configTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let m = ((try? FileManager.default.attributesOfItem(atPath: vbConfigPath))?[.modificationDate] as? Date) ?? Date.distantPast
+            if m != self.lastConfigMTime {
+                self.lastConfigMTime = m
+                let old = cfg
+                cfg = loadConfig()
+                if old.triggerKeyCode != cfg.triggerKeyCode || old.doubaoKeyCode != cfg.doubaoKeyCode
+                    || old.armDelay != cfg.armDelay || old.clipboardWait != cfg.clipboardWait {
+                    self.rebuildMenu()
+                    self.caption.stringValue = "按住\(keyName(cfg.triggerKeyCode))说话 · 松开自动粘贴"
+                    self.log("[配置] 文件已变更并重载：触发=\(keyName(cfg.triggerKeyCode)) 豆包=\(keyName(cfg.doubaoKeyCode)) 按住=\(cfg.armDelay)s")
+                }
+            }
+        }
     }
 
     func log(_ s: String) {
@@ -68,8 +190,59 @@ final class Bridge: NSObject, NSApplicationDelegate {
     func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🎙"
+        rebuildMenu()
+    }
+
+    func rebuildMenu() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "按住空格键说话", action: nil, keyEquivalent: ""))
+
+        let head = NSMenuItem(title: "按住\(keyName(cfg.triggerKeyCode))说话 · 唤起豆包用 \(keyName(cfg.doubaoKeyCode))", action: nil, keyEquivalent: "")
+        head.isEnabled = false
+        menu.addItem(head)
+        menu.addItem(NSMenuItem.separator())
+
+        // 触发键
+        let trig = NSMenuItem(title: "触发键：\(keyName(cfg.triggerKeyCode))", action: nil, keyEquivalent: "")
+        let trigSub = NSMenu()
+        for k in triggerOptions {
+            let it = NSMenuItem(title: keyName(k), action: #selector(setTriggerKey(_:)), keyEquivalent: "")
+            it.tag = Int(k)
+            it.target = self
+            it.state = Int(k) == Int(cfg.triggerKeyCode) ? .on : .off
+            trigSub.addItem(it)
+        }
+        trig.submenu = trigSub
+        menu.addItem(trig)
+
+        // 唤起豆包的键
+        let db = NSMenuItem(title: "唤起豆包的键：\(keyName(cfg.doubaoKeyCode))", action: nil, keyEquivalent: "")
+        let dbSub = NSMenu()
+        for k in doubaoOptions {
+            let it = NSMenuItem(title: keyName(k), action: #selector(setDoubaoKey(_:)), keyEquivalent: "")
+            it.tag = Int(k)
+            it.target = self
+            it.state = Int(k) == Int(cfg.doubaoKeyCode) ? .on : .off
+            dbSub.addItem(it)
+        }
+        db.submenu = dbSub
+        menu.addItem(db)
+
+        // 按住时长
+        let armMs = Int((cfg.armDelay * 1000).rounded())
+        let arm = NSMenuItem(title: "按住时长：\(armMs) ms", action: nil, keyEquivalent: "")
+        let armSub = NSMenu()
+        for ms in armOptions {
+            let it = NSMenuItem(title: "\(ms) ms", action: #selector(setArmDelay(_:)), keyEquivalent: "")
+            it.tag = ms
+            it.target = self
+            it.state = armMs == ms ? .on : .off
+            armSub.addItem(it)
+        }
+        arm.submenu = armSub
+        menu.addItem(arm)
+
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "打开配置文件", action: #selector(openConfig), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "打开辅助功能设置", action: #selector(openAXSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开输入监控设置", action: #selector(openIMSettings), keyEquivalent: ""))
@@ -78,12 +251,35 @@ final class Bridge: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    @objc func setTriggerKey(_ sender: NSMenuItem) {
+        cfg.triggerKeyCode = Int64(sender.tag)
+        saveConfig()
+        rebuildMenu()
+        caption.stringValue = "按住\(keyName(cfg.triggerKeyCode))说话 · 松开自动粘贴"
+        log("[配置] 触发键 → \(keyName(cfg.triggerKeyCode))（键码 \(sender.tag)）")
+    }
+
+    @objc func setDoubaoKey(_ sender: NSMenuItem) {
+        cfg.doubaoKeyCode = Int64(sender.tag)
+        saveConfig()
+        rebuildMenu()
+        log("[配置] 唤起豆包的键 → \(keyName(cfg.doubaoKeyCode))（键码 \(sender.tag)）")
+    }
+
+    @objc func setArmDelay(_ sender: NSMenuItem) {
+        cfg.armDelay = Double(sender.tag) / 1000.0
+        saveConfig()
+        rebuildMenu()
+        log("[配置] 按住时长 → \(sender.tag) ms")
+    }
+
     @objc func openAXSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
     @objc func openIMSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
     }
+    @objc func openConfig() { NSWorkspace.shared.open(URL(fileURLWithPath: vbConfigPath)) }
     @objc func quit() { NSApp.terminate(nil) }
 
     // MARK: 浮窗
@@ -136,7 +332,7 @@ final class Bridge: NSObject, NSApplicationDelegate {
         cap.drawsBackground = false
         cap.textColor = NSColor(calibratedWhite: 1, alpha: 0.55)
         cap.font = NSFont.systemFont(ofSize: 12)
-        cap.stringValue = "按住空格键说话 · 松开自动粘贴"
+        cap.stringValue = "按住\(keyName(cfg.triggerKeyCode))说话 · 松开自动粘贴"
         caption = cap
         container.addSubview(cap)
 
@@ -198,7 +394,7 @@ final class Bridge: NSObject, NSApplicationDelegate {
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            if !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(kHoldKey)) {
+            if !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(cfg.triggerKeyCode)) {
                 self.pollTimer?.invalidate()
                 self.pollTimer = nil
                 self.holding = false
@@ -215,28 +411,20 @@ final class Bridge: NSObject, NSApplicationDelegate {
         }
         guard type == .keyDown || type == .keyUp || type == .flagsChanged else { return Unmanaged.passUnretained(event) }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
-        if code == kHoldKey {
+        if code == cfg.triggerKeyCode {
+            // 修饰键型触发键（如右侧 Command）：走 flagsChanged，且不吞事件，以免破坏其它组合键
+            if type == .flagsChanged, let flag = modifierFlags[code] {
+                if event.flags.contains(flag) { beginHold() } else { cancelPendingStart() }
+                return Unmanaged.passUnretained(event)
+            }
             if type == .keyDown {
                 let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
                 if isRepeat { return nil }
-                if !holding && !busy {
-                    holding = true
-                    sawOtherKey = false
-                    let work = DispatchWorkItem { [weak self] in
-                        guard let self = self, self.holding, !self.sawOtherKey, !self.busy else { return }
-                        self.startRecording()
-                    }
-                    pendingStart = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + armDelay, execute: work)
-                }
+                beginHold()
                 return nil
             }
             if type == .keyUp {
-                if !recording {
-                    holding = false
-                    pendingStart?.cancel()
-                    pendingStart = nil
-                }
+                cancelPendingStart()
                 return nil
             }
             return Unmanaged.passUnretained(event)
@@ -245,15 +433,27 @@ final class Bridge: NSObject, NSApplicationDelegate {
         return Unmanaged.passUnretained(event)
     }
 
-    // MARK: 合成 Control（唤起豆包录音）
-    func clearPhysicalModifiers() {
-        guard let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kRightCommand), keyDown: false) else { return }
-        e.type = .flagsChanged
-        e.flags = []
-        e.post(tap: .cghidEventTap)
-        log("[修饰] 已清除右⌘修饰状态")
+    func beginHold() {
+        guard !holding && !busy else { return }
+        holding = true
+        sawOtherKey = false
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.holding, !self.sawOtherKey, !self.busy else { return }
+            self.startRecording()
+        }
+        pendingStart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + cfg.armDelay, execute: work)
     }
 
+    func cancelPendingStart() {
+        if !recording {
+            holding = false
+            pendingStart?.cancel()
+            pendingStart = nil
+        }
+    }
+
+    // MARK: 合成豆包快捷键（唤起录音）
     func doubaoBarVisible() -> Bool {
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         for w in list {
@@ -267,13 +467,22 @@ final class Bridge: NSObject, NSApplicationDelegate {
         return false
     }
 
-    func synthCtrl(_ down: Bool) {
-        guard let e = CGEvent(keyboardEventSource: src, virtualKey: kSyntheticCtrl, keyDown: down) else { return }
-        e.type = .flagsChanged
-        e.flags = down ? [.maskControl] : []
+    func synthDoubao(_ down: Bool) {
+        let kc = CGKeyCode(cfg.doubaoKeyCode)
+        guard let e = CGEvent(keyboardEventSource: src, virtualKey: kc, keyDown: down) else { return }
+        if let flag = modifierFlags[cfg.doubaoKeyCode] {
+            // 修饰键：发 flagsChanged，只带这一个修饰位（清掉其它修饰，避免继承物理状态）
+            e.type = .flagsChanged
+            e.flags = down ? flag : []
+        } else {
+            // 普通键：发 keyDown / keyUp
+            e.type = down ? .keyDown : .keyUp
+            e.flags = []
+        }
         e.post(tap: .cghidEventTap)
         ctrlHeld = down
-        log(down ? "[合成] Ctrl down → 豆包开始录音" : "[合成] Ctrl up → 豆包结束录音")
+        log(down ? "[合成] \(keyName(cfg.doubaoKeyCode)) down → 豆包开始录音"
+                 : "[合成] \(keyName(cfg.doubaoKeyCode)) up → 豆包结束录音")
     }
 
     // MARK: 录音
@@ -282,7 +491,7 @@ final class Bridge: NSObject, NSApplicationDelegate {
         recording = true
         destroyTap()
         textView.string = ""
-        caption.stringValue = "● 正在听… 说完松开空格键"
+        caption.stringValue = "● 正在听… 说完松开\(keyName(cfg.triggerKeyCode))"
         panel.setFrameOrigin(panelOrigin())
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
@@ -293,7 +502,7 @@ final class Bridge: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self = self, self.recording else { return }
             self.log("[诊断] isKey=\(self.panel.isKeyWindow) appActive=\(NSApp.isActive) first=\(type(of: self.panel.firstResponder ?? NSView()))")
-            self.synthCtrl(true)
+            self.synthDoubao(true)
             self.startPollingRelease()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
                 guard let self = self else { return }
@@ -308,7 +517,7 @@ final class Bridge: NSObject, NSApplicationDelegate {
         busy = true
         pollTimer?.invalidate()
         pollTimer = nil
-        if ctrlHeld { synthCtrl(false) }
+        if ctrlHeld { synthDoubao(false) }
         caption.stringValue = "转写中…"
         log("[结束] 等待豆包出字")
         waitStable { [weak self] text in
@@ -359,7 +568,7 @@ final class Bridge: NSObject, NSApplicationDelegate {
         log("[剪贴板] 已写入 \(clean.count) 字")
         hidePanel()
         activateUU()
-        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardWait) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + cfg.clipboardWait) { [weak self] in
             self?.sendCmdV()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self?.busy = false

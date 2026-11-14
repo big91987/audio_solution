@@ -80,6 +80,45 @@ ps -eo pid,comm | grep -i voicebridge
 
 全屏 UU 状态下也能触发，浮窗设置了 `canJoinAllSpaces + fullScreenAuxiliary`。
 
+菜单栏会有一个 **🎙** 图标，点开的菜单里可以直接改快捷键。
+
+## 配置
+
+两种方式，共用同一份配置：
+
+**方式一：菜单栏点选**（立即生效并写回文件）
+
+- **触发键**：空格 / Tab / 回车 / Esc / 分号 / 逗号 / 句号 / 反引号 / F13 / 右侧 Command / 左侧 Shift
+- **唤起豆包的键**：左 Control / 右 Control / 左 Option / 右 Option / F13 / F5~F9
+- **按住时长**：200 / 300 / 350 / 500 / 800 ms
+
+**方式二：手改 `~/.voicebridge/config.yaml`**（保存后 1 秒内自动重载，不用重启）
+
+```yaml
+triggerKeyCode: 49      # 触发键，49 = 空格
+doubaoKeyCode: 59       # 唤起豆包的键，59 = 左侧 Control
+armDelay: 0.35          # 按住多久才开录（秒）
+clipboardWait: 0.85     # 写剪贴板到按 Cmd+V 的等待（秒，给 UU 同步留时间）
+```
+
+常用键码：
+
+| 键 | 键码 | 键 | 键码 |
+|---|---|---|---|
+| 空格 | 49 | 左 Control | 59 |
+| Tab | 48 | 右 Control | 62 |
+| 回车 | 36 | 左 Option | 58 |
+| Esc | 53 | 右 Option | 61 |
+| 分号 | 41 | 右 Command | 54 |
+| 逗号 | 43 | 左 Command | 55 |
+| 句号 | 47 | 左 Shift | 56 |
+| 反引号 | 50 | F13 | 105 |
+
+两个必须注意的点：
+
+- **「唤起豆包的键」必须和豆包输入法里设置的语音键一致**，否则唤不起来。
+- **触发键别选修饰键**（如右 Command）。按住 ⌘ 时系统物理修饰状态常驻，合成的事件会被污染，这是实测踩过的坑。
+
 ## 工作原理与关键实现
 
 | 步骤 | 实现 | 备注 |
@@ -139,3 +178,5 @@ audio_solution/
     ├── Info.plist      # CFBundleIdentifier com.cuijin.voicebridge
     └── build.sh        # 编译脚本
 ```
+
+运行时配置单独存在 `~/.voicebridge/config.yaml`，不进仓库。

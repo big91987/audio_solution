@@ -1,6 +1,9 @@
 # audio_solution
 
-本仓库记录「远程桌面场景下用本机麦克风做语音输入」的方案探索，当前可用产物是 **VoiceBridge**。
+本仓库记录「远程桌面场景下用本机麦克风做语音输入」的方案探索。
+
+> **VoiceBridge 已拆分为独立仓库：[big91987/VoiceBridge](https://github.com/big91987/VoiceBridge)**
+> 新仓库有安装包、配置说明和方案笔记。本仓库仅保留探索过程与历史记录。
 
 ---
 
